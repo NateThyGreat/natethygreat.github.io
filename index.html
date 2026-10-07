@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Matchup Win Probability</title>
+<title>Matchup Tracker</title>
 <style>
   :root {
     --bg: #f6f7f9; --card: #ffffff; --text: #1a1d23; --muted: #6b7280;
-    --grid: #e5e7eb; --border: #e5e7eb; --away: #2563eb; --home: #ea580c;
+    --grid: #e5e7eb; --border: #e5e7eb; --away: #60a5fa; --home: #D30000;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f1115; --card: #181b22; --text: #e8eaed; --muted: #9aa0ab;
-      --grid: #2a2f39; --border: #2a2f39; --away: #60a5fa; --home: #fb923c;
+      --grid: #2a2f39; --border: #2a2f39; --away: #60a5fa; --home: #D30000;
     }
   }
   * { box-sizing: border-box; }
@@ -51,20 +51,19 @@
 </head>
 <body>
 <header>
-  <h1>Matchup Win Probability</h1>
+  <h1>Matchup Tracker</h1>
   <div class="sub" id="sub">Load a matchups_log.csv to begin.</div>
 </header>
 <div class="controls" id="controls" hidden>
   <label>Week <select id="week"></select></label>
   <label><input type="checkbox" id="compress" checked> Skip idle gaps (x-axis by sample)</label>
-  <label><button id="load">Load another CSV…</button></label>
+  <label>Graph <select id="metric"><option value="prob">Win probability</option><option value="proj">Projected points</option></select></label>
 </div>
 <div id="drop" class="empty" hidden>
   <p><strong>Drop your matchups_log.csv here</strong><br>or choose a file</p>
   <input type="file" id="file" accept=".csv,text/csv">
 </div>
 <main id="grid"></main>
-<input type="file" id="file2" accept=".csv,text/csv" hidden>
 
 <script>
 // Replaced by build_viewer.py with the CSV text so the page is fully self-contained.
@@ -128,7 +127,14 @@ function el(name, attrs, parent) {
   return e;
 }
 
-function chart(pts, compress) {
+function niceStep(raw) {
+  const e = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / e;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * e;
+}
+
+function chart(pts, compress, mode) {
+  const prob = mode === "prob";
+  const KA = prob ? "aw" : "aproj", KH = prob ? "hw" : "hproj";
   const W = 600, H = 230, L = 38, R = 12, T = 10, B = 26;
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}` });
   const t0 = pts[0].t.getTime(), t1 = pts[pts.length - 1].t.getTime();
@@ -137,13 +143,24 @@ function chart(pts, compress) {
     ? (n === 1 ? 0.5 : i / (n - 1))
     : (t1 === t0 ? 0.5 : (p.t - t0) / (t1 - t0)));
   const X = f => L + f * (W - L - R);
-  const Y = v => T + (1 - v / 100) * (H - T - B);
+  let lo = 0, hi = 100, tickVals = [0, 25, 50, 75, 100];
+  if (!prob) {
+    const vals = pts.flatMap(p => [p.aproj, p.hproj]);
+    let mn = Math.min(...vals), mx = Math.max(...vals);
+    if (mx - mn < 1) { mn -= 1; mx += 1; }
+    const step = niceStep((mx - mn) / 4);
+    lo = Math.floor(mn / step) * step; hi = Math.ceil(mx / step) * step;
+    tickVals = []; for (let v = lo; v <= hi + 1e-9; v += step) tickVals.push(+v.toFixed(6));
+  }
+  const Y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const fmtV = v => prob ? v + "%" : String(+v.toFixed(1));
 
-  [0, 25, 50, 75, 100].forEach(v => {
+  tickVals.forEach(v => {
+    const mid = prob && v === 50;
     el("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: "var(--grid)",
-                 "stroke-width": v === 50 ? 1.5 : 1, "stroke-dasharray": v === 50 ? "4 3" : "" }, svg);
+                 "stroke-width": mid ? 1.5 : 1, "stroke-dasharray": mid ? "4 3" : "" }, svg);
     const tx = el("text", { x: L - 6, y: Y(v) + 4, "text-anchor": "end", class: "axis" }, svg);
-    tx.textContent = v + "%";
+    tx.textContent = fmtV(v);
   });
 
   const sameDay = pts[0].t.toDateString() === pts[n - 1].t.toDateString();
@@ -161,7 +178,7 @@ function chart(pts, compress) {
     el("path", { d: n === 1 ? d + "h0.1" : d, fill: "none", stroke: color, "stroke-width": 2.2,
                  "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
   };
-  line("aw", "var(--away)"); line("hw", "var(--home)");
+  line(KA, "var(--away)"); line(KH, "var(--home)");
 
   // Hover crosshair + tooltip
   const g = el("g", { visibility: "hidden" }, svg);
@@ -183,11 +200,11 @@ function chart(pts, compress) {
     const p = pts[best], px = X(xs[best]);
     g.setAttribute("visibility", "visible");
     vl.setAttribute("x1", px); vl.setAttribute("x2", px);
-    da.setAttribute("cx", px); da.setAttribute("cy", Y(p.aw));
-    dh.setAttribute("cx", px); dh.setAttribute("cy", Y(p.hw));
+    da.setAttribute("cx", px); da.setAttribute("cy", Y(p[KA]));
+    dh.setAttribute("cx", px); dh.setAttribute("cy", Y(p[KH]));
     l1.textContent = p.t.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
-    l2.textContent = `${p.away}: ${p.aw.toFixed(1)}%`;
-    l3.textContent = `${p.home}: ${p.hw.toFixed(1)}%`;
+    l2.textContent = `${p.away}: ${prob ? p.aw.toFixed(1) + "%" : p.aproj.toFixed(1) + " pts"}`;
+    l3.textContent = `${p.home}: ${prob ? p.hw.toFixed(1) + "%" : p.hproj.toFixed(1) + " pts"}`;
     const w = Math.max(l1.getComputedTextLength?.() || 0, l2.getComputedTextLength?.() || 0,
                        l3.getComputedTextLength?.() || 0) + 16 || 150;
     const bx = px + 10 + w > W - R ? px - 10 - w : px + 10;
@@ -204,7 +221,7 @@ function chart(pts, compress) {
 }
 
 function render() {
-  const week = +$("week").value, compress = $("compress").checked;
+  const week = +$("week").value, compress = $("compress").checked, mode = $("metric").value;
   const rows = ALL.filter(r => r.week === week);
   const byKey = new Map();
   rows.forEach(r => { if (!byKey.has(r.key)) byKey.set(r.key, []); byKey.get(r.key).push(r); });
@@ -224,7 +241,7 @@ function render() {
       </div>`;
     card.querySelector(".away .tname").textContent = last.away;   // textContent: no HTML injection
     card.querySelector(".home .tname").textContent = last.home;
-    card.appendChild(chart(pts, compress));
+    card.appendChild(chart(pts, compress, mode));
     grid.appendChild(card);
   });
 
@@ -237,8 +254,7 @@ function render() {
 
 function readFile(f) { if (f) f.text().then(ingest); }
 $("file").onchange = e => readFile(e.target.files[0]);
-$("file2").onchange = e => readFile(e.target.files[0]);
-$("load").onclick = () => $("file2").click();
+$("metric").onchange = render;
 $("week").onchange = render;
 $("compress").onchange = render;
 ["dragover", "dragenter"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); $("drop").classList.add("over"); }));
